@@ -11,4 +11,5 @@
 !*.vhdl
 !docs/
 !scripts/
+!netlist_tool/
 !netlist_tool/*
