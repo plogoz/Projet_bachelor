@@ -1,0 +1,9 @@
+[project]
+name = "projet-bachelor"
+version = "0.1.0"
+description = "Python env for netlist editing"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "networkx>=3.6.1",
+]

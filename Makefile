@@ -10,9 +10,9 @@ help:
 	@echo "  make sim       - Compile and simulate the flip-flop adder"
 	@echo "  make surfer    - Open waveform viewer (requires tb.vcd)"
 	@echo "  make synth     - Synthesize design to Verilog netlist"
+	@echo "  make net       - Synthesize design to Verilog netlist SkyWater130nm mapping"
 	@echo "  make clean     - Remove generated files and artifacts"
 	@echo "  make help      - Show this help message"
-	@echo "  make net   - Synthesize design to Verilog netlist SkyWater130nm mapping"
 	@echo ""
 
 sim:
@@ -24,13 +24,13 @@ sim:
 surfer:
 	surfer tb.vcd
 
-synth:
+synth: # generic library synthesis
 	GHDL_PREFIX=/opt/homebrew/lib/ghdl yosys -m ghdl -p "\
     	ghdl --std=08 fsm.vhdl -e flip_flop_adder; \
         synth -top flip_flop_adder; \
      	write_verilog fsm_netlist.v"
 
-net:
+net: # synthesis with SkyWater130nm mapping
 	GHDL_PREFIX=/opt/homebrew/lib/ghdl yosys -m ghdl -p "\
 		ghdl --std=08 fsm.vhdl -e flip_flop_adder; \
 		synth -top flip_flop_adder; \

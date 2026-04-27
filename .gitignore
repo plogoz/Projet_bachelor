@@ -3,7 +3,11 @@
 
 # But track these files and folders
 !.gitignore
+!uv.lock
+!pyproject.toml
+!.python-version
 !Makefile
 !*.vhd
 !*.vhdl
 !docs/
+!scripts/
