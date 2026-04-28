@@ -143,12 +143,6 @@ def _scan(text: str) -> dict[str, CellInfo]:
                 pin_depth = depth
                 pending_pin = None
 
-            # elif pending_pg_pin is not None:
-            #     # Record now — we don't need anything from inside the body.
-            #     if cell_name is not None:
-            #         cells[cell_name].pins[pending_pg_pin] = "power"
-            #     pending_pg_pin = None
-
         elif m.group("close"):
             # Exit pin scope first, then cell scope.
             if depth == pin_depth:
@@ -169,10 +163,6 @@ def _scan(text: str) -> dict[str, CellInfo]:
         elif m.group("pin_name") is not None:
             if cell_name is not None:
                 pending_pin = _unquote(m.group("pin_name"))
-
-        # elif m.group("pg_name") is not None:
-        #     if cell_name is not None:
-        #         pending_pg_pin = _unquote(m.group("pg_name"))
 
         elif m.group("dir_val") is not None:
             # Store only when inside a signal-pin body; first occurrence wins.
@@ -373,13 +363,10 @@ def _run_self_tests() -> None:
     check(
         db["simple_and2"].pins["X"] == "output", "pin X: output (nested timing skipped)"
     )
-    # check(db["simple_and2"].pins["VGND"] == "power", "pg_pin no-space → power")
-    # check(db["simple_and2"].pins["VPWR"] == "power", "pg_pin → power")
 
     check("buf_x1" in db, "quoted cell name")
     check(db["buf_x1"].pins["A[0]"] == "input", "bus pin: quoted direction")
     check(db["buf_x1"].pins["Z[0]"] == "output", "bus pin output")
-    # check(db["buf_x1"].pins["VGND"] == "power", "quoted pg_pin → power")
 
     check("bidir_cell" in db, "bidir cell found")
     check(db["bidir_cell"].pins["IO"] == "inout", "inout direction")
