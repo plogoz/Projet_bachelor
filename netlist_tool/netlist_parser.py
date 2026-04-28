@@ -1,5 +1,6 @@
 """
 ----------
+Vibe coded
 Verilog gate-level netlist parser
 28.04.2026 @ 16h00
 ----------
