@@ -64,9 +64,7 @@ Two netlist formats were considered:
                    │
                    ▼
 ┌─────────────────────────────────────────────┐
-│  OpenROAD (via OpenLane 2, Docker)          │
-│  Place & Route both original + modified     │
-│  SPICE extraction                           │
+│  SPICE extraction with yosys                │
 └──────────────────┬──────────────────────────┘
                    │
                    ▼
@@ -141,15 +139,48 @@ Point Python script at closed-source Verilog netlist → run through closed-sour
 ### 5.3 Python + NetworkX — Netlist Editing Tool
 
 - **Purpose:** Parse, visualize, modify, and re-serialize Verilog netlists.
-- **Install:** `pip install networkx`
-- **Visualization options:** Graphviz (static, small circuits), yEd via GraphML export (interactive, medium circuits), or browser-based (Cytoscape.js / d3.js).
+- **Package manager:** `uv` (use `uv run python` instead of `python`).
+- **Visualization:** matplotlib + pygraphviz (`dot` layout, falls back to spring layout).
 - **Architecture:**
   ```
-  parser.py       — Verilog netlist → NetworkX DiGraph
-  visualizer.py   — DiGraph → visual graph output
-  inserter.py     — walk graph, inject black boxes every N gates
-  serializer.py   — DiGraph → Verilog netlist
-  main.py         — orchestrates the above, takes N as input
+  netlist_tool/
+    netlist_parser.py  — Verilog netlist → Module dataclass
+    lib_parser.py      — Liberty (.lib) → cell pin directions
+    graph_builder.py   — Module → NetworkX DiGraph
+    inserter.py        — topological walk + black-box injection every N gates
+    serializer.py      — Module → Verilog string / file
+    grapher.py         — DiGraph → matplotlib visualization
+    main.py            — CLI orchestrator
+  ```
+
+- **Status:** All modules implemented and self-tested.
+
+- **Running the tool:**
+  ```bash
+  # Basic usage (N=5, default placeholder cell BLACKBOX)
+  uv run python -m netlist_tool input.v output.v --N 5
+
+  # With custom black-box cell and port names
+  uv run python -m netlist_tool input.v output.v --N 5 \
+      --bb-cell MY_BB --in-port A --out-port Z
+
+  # With sky130 Liberty file for accurate pin-direction lookup
+  uv run python -m netlist_tool input.v output.v --N 5 \
+      --lib sky130_fd_sc_hd__tt_025C_1v80.lib
+
+  # Show graph in interactive window after processing
+  uv run python -m netlist_tool input.v output.v --N 5 --visualize
+
+  # Save graph image instead
+  uv run python -m netlist_tool input.v output.v --N 5 --visualize graph.png
+  ```
+
+- **Parser limitation:** The identifier rule does not allow `$` as a first character, so Yosys **generic** synthesis output (`$_AND_`, `$_DFF_P_`, …) will not parse. Use `make net` (sky130-mapped synthesis) to produce a compatible netlist. Generic cell support can be added to `netlist_parser.py` later if needed.
+
+- **Self-tests:**
+  ```bash
+  uv run python -m netlist_tool.netlist_parser   # 19 tests
+  uv run python -m netlist_tool.lib_parser       # 11 tests
   ```
 
 ### 5.4 OpenLane 2 (wraps OpenROAD + sky130 PDK) — Place & Route
@@ -232,9 +263,15 @@ Different cell names, different port names — but the **structure is identical*
 
 ## 8. Next Steps
 
-1. **Run Yosys synthesis** on `fsm.vhdl` to produce the first Verilog netlist.
-2. **Build the Python parser** to read the netlist into a NetworkX graph.
-3. **Build a graph visualizer** to inspect and understand the circuit structure.
-4. **Implement the insertion logic** (topological walk + black box injection).
+1. ~~**Run Yosys synthesis** on `fsm.vhdl` to produce the first Verilog netlist.~~ *(Makefile ready: `make synth` / `make net`)*
+2. ~~**Build the Python parser** to read the netlist into a NetworkX graph.~~ *(Done: `netlist_parser.py`, `lib_parser.py`, `graph_builder.py`)*
+3. ~~**Build a graph visualizer** to inspect and understand the circuit structure.~~ *(Done: `grapher.py`)*
+4. ~~**Implement the insertion logic** (topological walk + black box injection).~~ *(Done: `inserter.py`, `serializer.py`, `main.py`)*
 5. **Validate** with OpenLane + ngspice on the small FSM.
+   ```bash
+   make net                                          # sky130-mapped synthesis → fsm_netlist.v
+   uv run python -m netlist_tool \
+       fsm_netlist.v fsm_netlist_modified.v --N 5   # insert black boxes
+   # Then: run both through OpenLane → ngspice → compare
+   ```
 6. **Transfer** to the closed-source Verilog netlist.

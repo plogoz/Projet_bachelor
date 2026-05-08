@@ -127,6 +127,10 @@ class Module:
     wires: dict[str, WireDecl] = field(default_factory=dict)
     instances: list[Instance] = field(default_factory=list)
     assigns: list[Assign] = field(default_factory=list)
+    # Verbatim inner text of (* ... *) blocks that appear before the
+    # `module` keyword (e.g. "top =  1"). Preserved so that closed-source
+    # downstream tools see the same metadata after a parse/serialize round-trip.
+    attributes: list[str] = field(default_factory=list)
 
     def cell_type_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -349,8 +353,22 @@ module_grammar.ignore(_attribute)
 def parse(netlist_path: str | Path) -> Module:
     """Parse a single-module gate-level Verilog netlist into a Module."""
     text = Path(netlist_path).read_text(encoding="utf-8", errors="replace")
+
+    # The grammar discards (* ... *) blocks via ignore(_attribute), but those
+    # appearing before the `module` keyword carry tool metadata (e.g. top=1)
+    # that downstream tools rely on. Capture them here and re-attach post-parse.
+    leading_attrs: list[str] = []
+    head_match = re.search(r"\bmodule\b", text)
+    if head_match:
+        head = text[: head_match.start()]
+        # Strip comments first so they can't shadow attribute syntax.
+        head = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", head)
+        leading_attrs = re.findall(r"\(\*([\s\S]*?)\*\)", head)
+
     result = module_grammar.parse_string(text, parse_all=True)
-    return result[0]
+    module = result[0]
+    module.attributes = leading_attrs
+    return module
 
 
 # ---------------------------------------------------------------------------
