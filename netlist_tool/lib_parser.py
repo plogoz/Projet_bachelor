@@ -63,6 +63,9 @@ _TOKEN_RE = re.compile(
   | \bpin\s*\(\s*   (?P<pin_name>  "?[^")\s]+"?)\s*\)   # pin(name)
   | \bdirection\s*:\s*
     (?P<dir_val>     "?(?:input|output|inout|internal)"?)\s*;
+  | \bfunction\s*:\s*
+    (?P<func_val>    "[^"]*"|[^\s;]+)\s*;                # function : "expr" ;
+  | \b(?P<seq_kind>ff|latch)\s*\(                        # ff(...) / latch(...) header
   | (?P<open>  \{)
   | (?P<close> \})
     """,
@@ -86,6 +89,8 @@ class CellInfo:
 
     name: str
     pins: dict[str, str] = field(default_factory=dict)  # pin_name → direction
+    pin_function: dict[str, str] = field(default_factory=dict)  # output_pin → fn expr
+    is_seq: bool = False  # set when an ff() or latch() group appears in the cell
 
     def signal_pins(self) -> dict[str, str]:
         """Signal pins only (excludes power/ground)."""
@@ -96,6 +101,30 @@ class CellInfo:
 
     def output_pins(self) -> list[str]:
         return [p for p, d in self.pins.items() if d == "output"]
+
+    def is_sequential(self) -> bool:
+        """True iff this cell holds state (FF or latch).
+
+        Detected by the presence of an `ff()` or `latch()` group in the
+        Liberty cell body — library-agnostic, no name heuristics.
+        """
+        return self.is_seq
+
+    def is_buffer(self) -> bool:
+        """True iff this cell is a 1-input/1-output combinational buffer.
+
+        Library-agnostic: relies on the Liberty `function` attribute of the
+        output pin equalling the input pin name (with optional surrounding
+        parens / whitespace), not on cell-name conventions.
+        """
+        ins = self.input_pins()
+        outs = self.output_pins()
+        if len(ins) != 1 or len(outs) != 1:
+            return False
+        func = self.pin_function.get(outs[0], "").strip()
+        while func.startswith("(") and func.endswith(")"):
+            func = func[1:-1].strip()
+        return func == ins[0]
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +200,20 @@ def _scan(text: str) -> dict[str, CellInfo]:
                 if pin_name not in cell.pins:
                     cell.pins[pin_name] = _unquote(m.group("dir_val"))
 
+        elif m.group("func_val") is not None:
+            # Function attributes only matter on output pins; record the first.
+            if cell_name is not None and pin_name is not None:
+                cell = cells[cell_name]
+                if pin_name not in cell.pin_function:
+                    cell.pin_function[pin_name] = _unquote(m.group("func_val"))
+
+        elif m.group("seq_kind") is not None:
+            # Mark cell as sequential whenever an ff() or latch() header
+            # appears at cell scope (i.e. depth == cell_depth, not nested
+            # inside a pin's timing/internal_power group).
+            if cell_name is not None and depth == cell_depth:
+                cells[cell_name].is_seq = True
+
     return cells
 
 
@@ -206,8 +249,10 @@ class LibParser:
         cache = self.lib_path.with_suffix(self.lib_path.suffix + ".json")
         if use_cache and cache.exists():
             if cache.stat().st_mtime >= self.lib_path.stat().st_mtime:
-                self._db = self._load_cache(cache)
-                return self._db
+                loaded = self._load_cache(cache)
+                if loaded is not None:
+                    self._db = loaded
+                    return self._db
 
         text = self.lib_path.read_text(encoding="utf-8", errors="replace")
         text = _strip_comments(text)
@@ -259,14 +304,37 @@ class LibParser:
     # Cache helpers
     # ------------------------------------------------------------------
 
+    _CACHE_VERSION = 3
+
     def _write_cache(self, path: Path) -> None:
-        data = {name: cell.pins for name, cell in self._db.items()}
+        data = {
+            "version": self._CACHE_VERSION,
+            "cells": {
+                name: {
+                    "pins": cell.pins,
+                    "pin_function": cell.pin_function,
+                    "is_seq": cell.is_seq,
+                }
+                for name, cell in self._db.items()
+            },
+        }
         path.write_text(json.dumps(data, indent=2))
 
-    @staticmethod
-    def _load_cache(path: Path) -> dict[str, CellInfo]:
+    @classmethod
+    def _load_cache(cls, path: Path) -> dict[str, CellInfo] | None:
+        """Return cells dict, or None if the cache is in an older format."""
         data = json.loads(path.read_text())
-        return {name: CellInfo(name=name, pins=pins) for name, pins in data.items()}
+        if not isinstance(data, dict) or data.get("version") != cls._CACHE_VERSION:
+            return None
+        return {
+            name: CellInfo(
+                name=name,
+                pins=entry.get("pins", {}),
+                pin_function=entry.get("pin_function", {}),
+                is_seq=entry.get("is_seq", False),
+            )
+            for name, entry in data["cells"].items()
+        }
 
 
 # ---------------------------------------------------------------------------

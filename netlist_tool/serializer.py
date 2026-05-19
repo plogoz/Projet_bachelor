@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .netlist_parser import Module, NetRef, PortDecl, WireDecl
+from .netlist_parser import Module, NetRef
 
 
 def _range_str(msb: int | None, lsb: int | None) -> str:

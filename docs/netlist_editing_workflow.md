@@ -64,14 +64,11 @@ Two netlist formats were considered:
                    │
                    ▼
 ┌─────────────────────────────────────────────┐
-│  SPICE extraction with yosys                │
-└──────────────────┬──────────────────────────┘
-                   │
-                   ▼
-┌─────────────────────────────────────────────┐
-│  ngspice                                    │
-│  Simulate both netlists                     │
-│  Compare → verify functional equivalence    │
+│  Yosys formal equivalence check             │
+│  Prove fsm_modified.v ≡ fsm_netlist.v       │
+│  via equiv_make + equiv_induct              │
+│  (Signal integrity is deferred to the       │
+│   closed-source flow at tapeout.)           │
 └─────────────────────────────────────────────┘
 ```
 
@@ -193,18 +190,15 @@ Point Python script at closed-source Verilog netlist → run through closed-sour
 - **PDK:** SkyWater 130nm (`sky130_fd_sc_hd`). Most mature open PDK, best community support.
 - **Alternatives considered:** GlobalFoundries 180nm (gf180mcu), IHP 130nm (sg13g2).
 
-### 5.5 ngspice — SPICE Simulation
+### 5.5 Yosys formal equivalence checking
 
-- **Purpose:** Simulate original and modified SPICE netlists to verify functional equivalence.
-- **Install:** `brew install ngspice`
-- **Expected performance on small FSM:**
-
-  | Design size   | Estimated time |
-  |---------------|----------------|
-  | 10–20 gates   | < 1 second     |
-  | 100 gates     | a few seconds  |
-  | 1,000 gates   | ~1 minute      |
-  | 10,000+ gates | gets slow      |
+- **Purpose:** Prove that `fsm_modified.v` is logically identical to `fsm_netlist.v`.
+  Buffer insertion preserves logic, so this should always pass; the check is the gate that catches inserter bugs early.
+- **Tool:** Yosys (already installed for synthesis). No extra install.
+- **Run:** `make verify`
+- **Approach:** SAT-based equivalence (`equiv_make` + `equiv_induct -seq 10`) on the two netlists merged into a miter circuit. Sequential FFs are translated to combinational logic via `clk2fflogic` + `async2sync` so induction can prove state equivalence in one step.
+- **Why this instead of ngspice:** signal integrity is not a goal on sky130 (that's the closed-source flow's job at tapeout). For the open-source loop we only need to confirm functional equivalence, and EC proves it (rather than testing it) in ~0.1 s. ngspice would also require installing `sky130_fd_pr` transistor primitives and writing a power-aware SPICE writer, since Yosys's `write_spice` output is logic-abstract and not directly simulatable.
+- **Reproducibility:** The same conceptual flow exists in every closed-source EC tool (Cadence Conformal LEC, Synopsys Formality, Mentor Questa Formal). Keep `make verify` as an open-source sanity layer that runs independently of the vendor LEC step.
 
 ### 5.6 Surfer — Waveform Viewer
 
@@ -267,11 +261,11 @@ Different cell names, different port names — but the **structure is identical*
 2. ~~**Build the Python parser** to read the netlist into a NetworkX graph.~~ *(Done: `netlist_parser.py`, `lib_parser.py`, `graph_builder.py`)*
 3. ~~**Build a graph visualizer** to inspect and understand the circuit structure.~~ *(Done: `grapher.py`)*
 4. ~~**Implement the insertion logic** (topological walk + black box injection).~~ *(Done: `inserter.py`, `serializer.py`, `main.py`)*
-5. **Validate** with OpenLane + ngspice on the small FSM.
+5. ~~**Validate** with OpenLane + ngspice on the small FSM.~~
+   *(Replaced by Yosys formal equivalence — see §5.5. SPICE / OpenLane were ruled out: the goal on sky130 is functional equivalence, not signal integrity, and Yosys EC proves it in ~0.1 s.)*
    ```bash
-   make net                                          # sky130-mapped synthesis → fsm_netlist.v
-   uv run python -m netlist_tool \
-       fsm_netlist.v fsm_netlist_modified.v --N 5   # insert black boxes
-   # Then: run both through OpenLane → ngspice → compare
+   make net          # sky130-mapped synthesis → fsm_netlist.v
+   make editing      # insert buffers → fsm_modified.v
+   make verify       # prove equivalence (Yosys equiv_induct)
    ```
-6. **Transfer** to the closed-source Verilog netlist.
+6. **Transfer** to the closed-source Verilog netlist. Run the closed-source LEC tool for the vendor-grade equivalence check; keep `make verify` as the dev-time sanity layer that runs independently of the vendor toolchain.
