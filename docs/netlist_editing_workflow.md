@@ -175,10 +175,24 @@ Point Python script at closed-source Verilog netlist → run through closed-sour
   uv run python -m netlist_tool input.v output.v --N 5 \
       --cdl TEST_CELLS.cdl
 
-  # Emit a stub .lib from a CDL so Yosys can run equivalence on the
-  # CDL-edited netlist (see §5.5 and docs/cdl_backend.md).
+  # Multi-file / directory CDL — real PDKs ship cells split across many
+  # .cdl files. Either pass an explicit list or a folder; in both cases
+  # all cells are merged into one library and a duplicate cell name is
+  # a hard error. Sidecars auto-discover per-file (foo.cdl ↔
+  # foo.cells.json) unless --cell-meta is given explicitly as one
+  # master file or a list.
+  uv run python -m netlist_tool input.v output.v --N 5 \
+      --cdl pdk/inv.cdl pdk/nand.cdl pdk/dff.cdl
+  uv run python -m netlist_tool input.v output.v --N 5 \
+      --cdl pdk_cdls/ --cell-meta pdk_master.cells.json
+
+  # Emit a stub .lib from a CDL (or set of CDLs) so Yosys can run
+  # equivalence on the CDL-edited netlist (see §5.5 and
+  # docs/cdl_backend.md).
   uv run python -m netlist_tool.cdl_parser --emit-stub-lib TEST_CELLS.cdl \
       -o TEST_CELLS.cdl.stub.lib
+  uv run python -m netlist_tool.cdl_parser --emit-stub-lib pdk_cdls/ \
+      -o pdk_cdls.stub.lib
 
   # Show graph in interactive window after processing
   uv run python -m netlist_tool input.v output.v --N 5 --visualize

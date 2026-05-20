@@ -7,7 +7,8 @@ python -m netlist_tool INPUT.v OUTPUT.v --N 5
                                         [--bb-cell BLACKBOX]
                                         [--in-port IN --out-port OUT]
                                         [--lib path/to/cells.lib |
-                                         --cdl path/to/cells.cdl [--cell-meta path]]
+                                         --cdl path/to/cells.cdl [path/to/more.cdl ... | path/to/cdl_dir/]
+                                         [--cell-meta path [path ...]]]
                                         [--visualize [FILE]]
 
 Orchestration
@@ -77,19 +78,23 @@ def _build_parser() -> argparse.ArgumentParser:
     lib_group.add_argument(
         "--cdl",
         type=Path,
+        nargs="+",
         default=None,
         metavar="CDL",
-        help="CDL (.cdl) file with .SUBCKT / *.PININFO. Used when the PDK "
-        "ships no Liberty (closed-source flow). Pair with --cell-meta to "
-        "classify buffers / sequential cells.",
+        help="One or more CDL files, or a directory of *.cdl. Used when the "
+        "PDK ships no Liberty (closed-source flow). Multiple inputs are "
+        "merged into one library; duplicate cell names across files cause an "
+        "error. Pair with --cell-meta to classify buffers / sequential cells.",
     )
     p.add_argument(
         "--cell-meta",
         type=Path,
+        nargs="+",
         default=None,
         metavar="JSON",
-        help="Sidecar JSON for CDL: {\"buffers\":[...], \"sequential\":[...]}. "
-        "Defaults to <cdl_stem>.cells.json next to the CDL file.",
+        help="Sidecar JSON(s) for CDL: {\"buffers\":[...], \"sequential\":[...]}. "
+        "Omit to auto-discover <cdl_stem>.cells.json next to each CDL; pass "
+        "explicitly (one master file or a list) to override auto-discovery.",
     )
     p.add_argument(
         "--visualize",
@@ -117,6 +122,13 @@ def _load_library(args):
             file=sys.stderr,
         )
     return None
+
+
+def _describe_lib_source(args, lib) -> str:
+    """Human-readable label for the library source, for log messages."""
+    if args.lib is not None:
+        return args.lib.name
+    return lib.source_label
 
 
 def _auto_select_buffer(lib) -> tuple[str, str, str] | None:
@@ -149,14 +161,13 @@ def main(argv: list[str] | None = None) -> int:
     print(module.summary())
 
     lib = _load_library(args)
-    lib_source = args.lib or args.cdl
 
     if args.bb_cell is None and lib is not None:
         pick = _auto_select_buffer(lib)
         if pick is not None:
             args.bb_cell, args.in_port, args.out_port = pick
             print(
-                f"\nAuto-selected buffer from {lib_source.name}: "
+                f"\nAuto-selected buffer from {_describe_lib_source(args, lib)}: "
                 f"{args.bb_cell} (in={args.in_port}, out={args.out_port})"
             )
     if args.bb_cell is None:

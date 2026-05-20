@@ -21,10 +21,16 @@ file:
       "sequential": ["DFF_TEST",  "DLAT_TEST"]
     }
 
-Auto-discovery: if the constructor is given a CDL path `foo.cdl` and no
-explicit `cell_meta`, we look for `foo.cells.json` next to it. Names in
-the sidecar that aren't in the parsed CDL produce a warning, not an
-error (PDK / sidecar can drift independently).
+Multi-input: the parser accepts a single CDL path, a list of CDL paths,
+or a directory of CDLs (top-level *.cdl only). All cells are merged
+into one library; a cell name defined in two files is a hard error and
+names both source paths.
+
+Sidecar precedence: if `cell_meta` is omitted, each CDL auto-discovers
+its own `<stem>.cells.json` next to it. If `cell_meta` is passed
+(single path or list), auto-discovery is skipped entirely — useful for
+one master sidecar covering many CDLs. Names in any sidecar that
+aren't in the parsed CDLs produce a warning, not an error.
 
 Public API mirrors LibParser so graph_builder / inserter / main use it
 through duck typing without modification.
@@ -32,9 +38,11 @@ through duck typing without modification.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from .cell_info import CellInfo
@@ -138,50 +146,133 @@ def _apply_meta(
 
 
 # ---------------------------------------------------------------------------
+# Multi-input expansion
+# ---------------------------------------------------------------------------
+
+
+def _normalize_paths(
+    inputs: str | Path | Sequence[str | Path],
+) -> list[Path]:
+    """Accept a single path or a sequence of paths; return list[Path]."""
+    if isinstance(inputs, (str, Path)):
+        return [Path(inputs)]
+    return [Path(p) for p in inputs]
+
+
+def _expand_inputs(inputs: list[Path]) -> list[Path]:
+    """Expand directories to their top-level *.cdl files; keep files as-is.
+
+    Dotfiles are skipped. Output is sorted and deduped by resolved path so
+    behavior is deterministic across filesystems with different listing
+    orders.
+    """
+    expanded: list[Path] = []
+    for inp in inputs:
+        if inp.is_dir():
+            for cdl in sorted(inp.glob("*.cdl")):
+                if cdl.name.startswith("."):
+                    continue
+                expanded.append(cdl)
+        else:
+            expanded.append(inp)
+
+    seen: set[Path] = set()
+    deduped: list[Path] = []
+    for p in expanded:
+        try:
+            key = p.resolve()
+        except OSError:
+            key = p
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return sorted(deduped, key=lambda p: str(p))
+
+
+def _discover_sidecars(cdl_paths: list[Path]) -> list[Path]:
+    """For each CDL, return its `<stem>.cells.json` sibling if it exists."""
+    found: list[Path] = []
+    for cdl in cdl_paths:
+        candidate = cdl.with_suffix(".cells.json")
+        if candidate.exists():
+            found.append(candidate)
+    return found
+
+
+# ---------------------------------------------------------------------------
 # CdlParser — public class
 # ---------------------------------------------------------------------------
 
 
 class CdlParser:
-    """CDL file parser, duck-typed compatible with LibParser."""
+    """CDL file parser, duck-typed compatible with LibParser.
 
-    _CACHE_VERSION = 1
+    Accepts one or more CDL inputs (files or directories) and zero or
+    more sidecar JSONs. See module docstring for the precedence rules.
+    """
+
+    _CACHE_VERSION = 2
+    _CACHE_DIR = Path(".cdlcache")
 
     def __init__(
         self,
-        cdl_path: str | Path,
-        cell_meta: str | Path | None = None,
+        cdl_paths: str | Path | Sequence[str | Path],
+        cell_meta: str | Path | Sequence[str | Path] | None = None,
     ) -> None:
-        self.cdl_path = Path(cdl_path)
+        self.cdl_paths: list[Path] = _expand_inputs(_normalize_paths(cdl_paths))
+        if not self.cdl_paths:
+            raise ValueError("CdlParser: no .cdl files found in the given inputs")
+
         if cell_meta is None:
-            # Default sidecar: foo.cdl → foo.cells.json
-            candidate = self.cdl_path.with_suffix(".cells.json")
-            self.meta_path: Path | None = candidate if candidate.exists() else None
+            self.meta_paths: list[Path] = _discover_sidecars(self.cdl_paths)
         else:
-            self.meta_path = Path(cell_meta)
+            self.meta_paths = _normalize_paths(cell_meta)
+
         self._db: dict[str, CellInfo] | None = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    @property
+    def source_label(self) -> str:
+        """Human-readable description of the input set for logging."""
+        if len(self.cdl_paths) == 1:
+            return self.cdl_paths[0].name
+        head = ", ".join(p.name for p in self.cdl_paths[:3])
+        tail = "…" if len(self.cdl_paths) > 3 else ""
+        return f"{len(self.cdl_paths)} CDL files: {head}{tail}"
+
     def parse(self, use_cache: bool = True) -> dict[str, CellInfo]:
         if self._db is not None:
             return self._db
 
-        cache = self.cdl_path.with_suffix(self.cdl_path.suffix + ".json")
+        cache = self._cache_path()
         if use_cache and cache.exists() and self._cache_is_fresh(cache):
             loaded = self._load_cache(cache)
             if loaded is not None:
                 self._db = loaded
                 return self._db
 
-        text = self.cdl_path.read_text(encoding="utf-8", errors="replace")
-        self._db = _scan(text)
+        db: dict[str, CellInfo] = {}
+        cell_sources: dict[str, Path] = {}
+        for cdl in self.cdl_paths:
+            text = cdl.read_text(encoding="utf-8", errors="replace")
+            scanned = _scan(text)
+            for name, cell in scanned.items():
+                prev = cell_sources.get(name)
+                if prev is not None:
+                    raise ValueError(
+                        f"cell '{name}' defined in both {prev} and {cdl}"
+                    )
+                cell_sources[name] = cdl
+                db[name] = cell
+        self._db = db
 
-        if self.meta_path is not None:
-            meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
-            _apply_meta(self._db, meta, str(self.meta_path))
+        for meta_path in self.meta_paths:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            _apply_meta(self._db, meta, str(meta_path))
 
         if use_cache:
             self._write_cache(cache)
@@ -210,7 +301,7 @@ class CdlParser:
     def summary(self) -> str:
         db = self.parse()
         lines = [
-            f"CDL library     : {self.cdl_path.name}",
+            f"CDL library     : {self.source_label}",
             f"Total cells     : {len(db)}",
             f"Total pins      : {sum(len(c.pins) for c in db.values())}",
             f"Buffers tagged  : {sum(1 for c in db.values() if c.is_buf)}",
@@ -231,16 +322,32 @@ class CdlParser:
     # Cache helpers
     # ------------------------------------------------------------------
 
+    def _cache_key(self) -> str:
+        parts: list[tuple[str, int, int]] = []
+        for p in self.cdl_paths + self.meta_paths:
+            try:
+                st = p.stat()
+            except FileNotFoundError:
+                continue
+            parts.append((str(p.resolve()), st.st_mtime_ns, st.st_size))
+        parts.sort()
+        digest = hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
+        return digest
+
+    def _cache_path(self) -> Path:
+        return self._CACHE_DIR / f"{self._cache_key()}.json"
+
     def _cache_is_fresh(self, cache: Path) -> bool:
         ctime = cache.stat().st_mtime
-        if ctime < self.cdl_path.stat().st_mtime:
-            return False
-        if self.meta_path is not None and self.meta_path.exists():
-            if ctime < self.meta_path.stat().st_mtime:
+        for p in self.cdl_paths + self.meta_paths:
+            if not p.exists():
+                continue
+            if ctime < p.stat().st_mtime:
                 return False
         return True
 
     def _write_cache(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": self._CACHE_VERSION,
             "cells": {
@@ -354,16 +461,21 @@ def _main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--emit-stub-lib",
         type=Path,
+        nargs="+",
         metavar="CDL",
         required=True,
-        help="CDL file to read.",
+        help="One or more CDL files, or a directory of *.cdl. "
+        "All inputs are merged; duplicate cell names cause an error.",
     )
     ap.add_argument(
         "--cell-meta",
         type=Path,
+        nargs="+",
         default=None,
         metavar="JSON",
-        help="Sidecar classification JSON (defaults to <cdl_stem>.cells.json).",
+        help="Sidecar classification JSON(s). Omit to auto-discover "
+        "<cdl_stem>.cells.json next to each CDL; pass explicitly to "
+        "override auto-discovery entirely.",
     )
     ap.add_argument(
         "-o",
@@ -377,7 +489,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     parser = CdlParser(args.emit_stub_lib, cell_meta=args.cell_meta)
     db = parser.parse()
-    emit_stub_lib(db, args.output, source_name=parser.cdl_path.name)
+    emit_stub_lib(db, args.output, source_name=parser.source_label)
     print(
         f"Wrote {args.output} ({len(db)} cells, "
         f"{sum(1 for c in db.values() if c.is_buf)} buffer(s) with function attr)"

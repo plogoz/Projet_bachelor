@@ -4,10 +4,16 @@
 LIB = skywater-pdk-libs-sky130_fd_sc_hd/timing/sky130_fd_sc_hd__tt_025C_1v80.lib
 
 # Closed-source / CDL flow (parallel to the sky130 .lib flow above).
-# Override on the command line as needed: `make editing-cdl CDL=foo.cdl`.
+# Override on the command line as needed. CDL can be a single file, a
+# space-separated list, or a directory of *.cdl:
+#   make editing-cdl CDL=foo.cdl
+#   make editing-cdl CDL="foo.cdl bar.cdl"
+#   make editing-cdl CDL=pdk_cdls/
+# CELL_META is optional — omit to let each CDL auto-discover its own
+# <stem>.cells.json sidecar; pass one or more files to override.
 CDL       ?= TEST_CELLS.cdl
 CELL_META ?= TEST_CELLS.cells.json
-STUB_LIB  := $(CDL).stub.lib
+STUB_LIB  ?= cdl_stub.lib
 
 N_BUFF = 5
 
@@ -113,5 +119,6 @@ clean:
 	rm -f *.o *.cf *.vcd
 	rm -f tb_flip_flop_adder
 	rm -f fsm_netlist.v fsm_modified.v
-	rm -f $(STUB_LIB) $(CDL).json
+	rm -f $(STUB_LIB)
+	rm -rf .cdlcache
 	@echo "Cleaned: object files, config files, waveforms, testbench, and synthesis results"
