@@ -165,7 +165,17 @@ def insert_buffers(
     bb_index = 0
     max_depth_seen = 0
 
-    for node in nx.topological_sort(graph):
+    try:
+        topo_order = list(nx.topological_sort(graph))
+    except nx.NetworkXUnfeasible:
+        print(
+            "error: graph contains a cycle — depth-based insertion needs a DAG",
+            file=sys.stderr,
+        )
+        _diagnose_cycle(graph, cells)
+        raise
+
+    for node in topo_order:
         attrs = graph.nodes[node]
         if attrs.get("kind") != "gate":
             continue
