@@ -142,7 +142,9 @@ Point Python script at closed-source Verilog netlist → run through closed-sour
   ```
   netlist_tool/
     netlist_parser.py  — Verilog netlist → Module dataclass
+    cell_info.py       — shared CellInfo dataclass (both backends)
     lib_parser.py      — Liberty (.lib) → cell pin directions
+    cdl_parser.py      — CDL (.cdl) → cell pin directions (closed-source PDKs)
     graph_builder.py   — Module → NetworkX DiGraph
     inserter.py        — topological walk + black-box injection every N gates
     serializer.py      — Module → Verilog string / file
@@ -164,6 +166,19 @@ Point Python script at closed-source Verilog netlist → run through closed-sour
   # With sky130 Liberty file for accurate pin-direction lookup
   uv run python -m netlist_tool input.v output.v --N 5 \
       --lib sky130_fd_sc_hd__tt_025C_1v80.lib
+
+  # Closed-source flow: CDL instead of Liberty.
+  # Sidecar TEST_CELLS.cells.json is auto-discovered next to the CDL;
+  # pass --cell-meta to point elsewhere. The sidecar lists which cell
+  # names are buffers / sequential, since CDL carries no function: or
+  # ff()/latch() metadata. See docs/cdl_backend.md for details.
+  uv run python -m netlist_tool input.v output.v --N 5 \
+      --cdl TEST_CELLS.cdl
+
+  # Emit a stub .lib from a CDL so Yosys can run equivalence on the
+  # CDL-edited netlist (see §5.5 and docs/cdl_backend.md).
+  uv run python -m netlist_tool.cdl_parser --emit-stub-lib TEST_CELLS.cdl \
+      -o TEST_CELLS.cdl.stub.lib
 
   # Show graph in interactive window after processing
   uv run python -m netlist_tool input.v output.v --N 5 --visualize
@@ -199,6 +214,7 @@ Point Python script at closed-source Verilog netlist → run through closed-sour
 - **Approach:** SAT-based equivalence (`equiv_make` + `equiv_induct -seq 10`) on the two netlists merged into a miter circuit. Sequential FFs are translated to combinational logic via `clk2fflogic` + `async2sync` so induction can prove state equivalence in one step.
 - **Why this instead of ngspice:** signal integrity is not a goal on sky130 (that's the closed-source flow's job at tapeout). For the open-source loop we only need to confirm functional equivalence, and EC proves it (rather than testing it) in ~0.1 s. ngspice would also require installing `sky130_fd_pr` transistor primitives and writing a power-aware SPICE writer, since Yosys's `write_spice` output is logic-abstract and not directly simulatable.
 - **Reproducibility:** The same conceptual flow exists in every closed-source EC tool (Cadence Conformal LEC, Synopsys Formality, Mentor Questa Formal). Keep `make verify` as an open-source sanity layer that runs independently of the vendor LEC step.
+- **CDL variant — `make verify-cdl`:** When the input metadata is a `.cdl` (no Liberty available), the recipe first auto-generates a stub `.lib` from the parsed CDL, then runs the same `equiv_make` / `equiv_induct` flow against it. The stub omits `function:` for sequential cells (their Liberty function references internal `ff()` nodes that we don't synthesize), and the Yosys command uses a two-pass `read_liberty` — `-lib` to register blackbox modules for all cells, then `-overwrite` to add function info on top — so flops appear in the design as opaque-but-matching blackboxes while combinational cells and buffers are reasoned about exactly. This proves structural equivalence (the inserted buffers are identity, the rest is unchanged); cycle-level FF semantics are still left to vendor LEC. Full rationale in [docs/cdl_backend.md](cdl_backend.md).
 
 ### 5.6 Surfer — Waveform Viewer
 
@@ -255,7 +271,58 @@ Different cell names, different port names — but the **structure is identical*
 
 ---
 
-## 8. Next Steps
+## 8. CDL Workflow (closed-source PDK flow)
+
+In the production flow the PDK is closed-source and the only cell metadata accessible to the Python tool is a CDL (`.SUBCKT` + `*.PININFO`) file — no Liberty, no characterized timing, no `function:` or `ff()` markers. The pipeline (parse → graph → insert → serialize) is unchanged; only the library backend swaps.
+
+### 8.1 What changes vs. the Liberty flow
+
+| Aspect                | Liberty (sky130)                          | CDL (closed-source)                          |
+|-----------------------|-------------------------------------------|----------------------------------------------|
+| Pin direction source  | `pin () { direction : … }` blocks         | `*.PININFO A:I B:I Y:O …` line               |
+| Buffer / FF detection | `function:` equality / `ff()` group       | Sidecar JSON `<cdl>.cells.json`              |
+| Equivalence Liberty   | The real PDK `.lib`                       | Auto-generated stub from CDL                 |
+| Make targets          | `make editing` / `make verify`            | `make editing-cdl` / `make verify-cdl`       |
+
+Two pieces close the gap:
+
+- **Sidecar JSON.** `<cdl_stem>.cells.json` lists which cell names are buffers and which are sequential. It is the single place where classification the CDL does not carry gets injected — auto-discovered next to the CDL, overridable with `--cell-meta`. The tool never guesses from cell names.
+- **Stub `.lib` generator.** `python -m netlist_tool.cdl_parser --emit-stub-lib` writes a minimal Liberty file from the parsed CDL: a `cell()` block per CDL cell with pin directions, plus `function : "<input>"` only on the cells the sidecar tagged as buffers. The Makefile builds this on demand under `$(STUB_LIB)`.
+
+### 8.2 Running the flow
+
+```bash
+make editing-cdl     # insert buffers using the CDL backend
+make verify-cdl      # structural-equivalence check via auto-generated stub
+```
+
+The variables `CDL`, `CELL_META`, `STUB_LIB` are overridable on the command line — `make editing-cdl CDL=foo.cdl CELL_META=foo.cells.json` swaps the fixture for a real PDK CDL without touching the Makefile.
+
+### 8.3 Yosys two-pass `read_liberty`
+
+`verify-cdl` uses a two-pass library read:
+
+```
+read_liberty -lib                         $(STUB_LIB)
+read_liberty -ignore_miss_func -overwrite $(STUB_LIB)
+```
+
+The first pass registers every cell as an empty blackbox module (port directions only) — required because sequential cells in the stub intentionally carry no `function:`, and a single-pass `read_liberty -ignore_miss_func` would drop them entirely. The second pass upgrades the cells that *do* have a function (combinational cells plus tagged buffers) with their function expression. Flops then appear as opaque-but-matching blackboxes on both sides of the miter, buffers are recognized as identity, and the existing `equiv_make` / `equiv_induct` pipeline converges.
+
+### 8.4 Validation
+
+The stub generator was validated by round-trip against the real sky130 Liberty: parse with `LibParser`, emit through the same `emit_stub_lib` the CDL flow uses, then run `make verify LIB=<roundtripped-stub>` on the existing `fsm_netlist.v` / `fsm_modified.v` pair. Both that round-trip and the original `make verify` (with the real `.lib`) print **Equivalence successfully proven**, confirming the writer preserves enough information for Yosys to do its job without ever needing to emit `ff()` blocks.
+
+### 8.5 Limitations
+
+- Cycle-level FF semantics are out of scope for `verify-cdl` — the sidecar does not carry clk/D pin mapping. Vendor LEC handles that at tapeout; `verify-cdl` catches inserter bugs structurally in ~0.1 s.
+- `:B` PININFO pins collapse bias, VDD, and VSS into one category (mapped to Liberty `"power"`). Sufficient for the tool's signal-pin filter; can be refined if a PDK ever needs the distinction.
+
+Full rationale, fixture quirks (`*.PININFO`/`.SUBCKT` mismatches, missing final `.ENDS`), and file map in [docs/cdl_backend.md](cdl_backend.md).
+
+---
+
+## 9. Next Steps
 
 1. ~~**Run Yosys synthesis** on `fsm.vhdl` to produce the first Verilog netlist.~~ *(Makefile ready: `make synth` / `make net`)*
 2. ~~**Build the Python parser** to read the netlist into a NetworkX graph.~~ *(Done: `netlist_parser.py`, `lib_parser.py`, `graph_builder.py`)*
@@ -268,4 +335,4 @@ Different cell names, different port names — but the **structure is identical*
    make editing      # insert buffers → fsm_modified.v
    make verify       # prove equivalence (Yosys equiv_induct)
    ```
-6. **Transfer** to the closed-source Verilog netlist. Run the closed-source LEC tool for the vendor-grade equivalence check; keep `make verify` as the dev-time sanity layer that runs independently of the vendor toolchain.
+6. ~~**Transfer** to the closed-source Verilog netlist.~~ *(CDL backend integrated: `make editing-cdl` runs the insertion pipeline against a `.cdl` + sidecar JSON; `make verify-cdl` runs Yosys equivalence via an auto-generated stub `.lib`. Both verified end-to-end against the sky130 fixture by round-tripping the real Liberty file through the same writer. See [docs/cdl_backend.md](cdl_backend.md).)* Run the vendor LEC tool for the final equivalence check; keep `make verify-cdl` as the dev-time sanity layer that runs independently of the vendor toolchain.

@@ -6,13 +6,14 @@ Usage
 python -m netlist_tool INPUT.v OUTPUT.v --N 5
                                         [--bb-cell BLACKBOX]
                                         [--in-port IN --out-port OUT]
-                                        [--lib path/to/cells.lib]
+                                        [--lib path/to/cells.lib |
+                                         --cdl path/to/cells.cdl [--cell-meta path]]
                                         [--visualize [FILE]]
 
 Orchestration
 -------------
 1. Parse Verilog netlist  →  Module
-2. (optional) Load Liberty lib  →  LibParser
+2. Load library backend (Liberty .lib or CDL .cdl)
 3. Build NetworkX DiGraph  →  Graph
 4. Insert black boxes every N gates  →  modified Module
 5. Write modified netlist to OUTPUT.v
@@ -65,12 +66,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output port name (auto-derived when --bb-cell is "
         "auto-selected from --lib).",
     )
-    p.add_argument(
+    lib_group = p.add_mutually_exclusive_group()
+    lib_group.add_argument(
         "--lib",
         type=Path,
         default=None,
         metavar="LIB",
         help="Liberty (.lib) file for accurate pin-direction lookup",
+    )
+    lib_group.add_argument(
+        "--cdl",
+        type=Path,
+        default=None,
+        metavar="CDL",
+        help="CDL (.cdl) file with .SUBCKT / *.PININFO. Used when the PDK "
+        "ships no Liberty (closed-source flow). Pair with --cell-meta to "
+        "classify buffers / sequential cells.",
+    )
+    p.add_argument(
+        "--cell-meta",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="Sidecar JSON for CDL: {\"buffers\":[...], \"sequential\":[...]}. "
+        "Defaults to <cdl_stem>.cells.json next to the CDL file.",
     )
     p.add_argument(
         "--visualize",
@@ -80,6 +99,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Visualize the graph.  Optionally supply a file path to save.",
     )
     return p
+
+
+def _load_library(args):
+    """Construct the right library backend, or None if neither flag was given."""
+    if args.lib is not None:
+        from .lib_parser import LibParser
+
+        return LibParser(args.lib)
+    if args.cdl is not None:
+        from .cdl_parser import CdlParser
+
+        return CdlParser(args.cdl, cell_meta=args.cell_meta)
+    if args.cell_meta is not None:
+        print(
+            "warning: --cell-meta has no effect without --cdl",
+            file=sys.stderr,
+        )
+    return None
 
 
 def _auto_select_buffer(lib) -> tuple[str, str, str] | None:
@@ -111,18 +148,15 @@ def main(argv: list[str] | None = None) -> int:
     module = parse(args.input)
     print(module.summary())
 
-    lib = None
-    if args.lib is not None:
-        from .lib_parser import LibParser
-
-        lib = LibParser(args.lib)
+    lib = _load_library(args)
+    lib_source = args.lib or args.cdl
 
     if args.bb_cell is None and lib is not None:
         pick = _auto_select_buffer(lib)
         if pick is not None:
             args.bb_cell, args.in_port, args.out_port = pick
             print(
-                f"\nAuto-selected buffer from {args.lib.name}: "
+                f"\nAuto-selected buffer from {lib_source.name}: "
                 f"{args.bb_cell} (in={args.in_port}, out={args.out_port})"
             )
     if args.bb_cell is None:
@@ -138,8 +172,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if lib is None:
         print(
-            "error: --lib is required (depth-based insertion needs Liberty "
-            "info to identify flip-flops and buffers)",
+            "error: --lib or --cdl is required (depth-based insertion needs "
+            "cell metadata to identify flip-flops and buffers)",
             file=sys.stderr,
         )
         return 1

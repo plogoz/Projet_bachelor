@@ -1,7 +1,13 @@
-.PHONY: help sim surfer synth net editing visualize verify clean all
+.PHONY: help sim surfer synth net editing visualize verify editing-cdl verify-cdl clean all
 
 # skywater130nm path
 LIB = skywater-pdk-libs-sky130_fd_sc_hd/timing/sky130_fd_sc_hd__tt_025C_1v80.lib
+
+# Closed-source / CDL flow (parallel to the sky130 .lib flow above).
+# Override on the command line as needed: `make editing-cdl CDL=foo.cdl`.
+CDL       ?= TEST_CELLS.cdl
+CELL_META ?= TEST_CELLS.cells.json
+STUB_LIB  := $(CDL).stub.lib
 
 N_BUFF = 5
 
@@ -17,6 +23,8 @@ help:
 	@echo "  make editing   - Edit the netlist with the netlist_tool"
 	@echo "  make visualize - Visualize the netlist with the netlist_tool"
 	@echo "  make verify    - Prove fsm_modified.v is logically equivalent to fsm_netlist.v"
+	@echo "  make editing-cdl - Edit the netlist using a CDL backend (closed-source flow)"
+	@echo "  make verify-cdl  - Structural-equivalence check via auto-generated stub .lib"
 	@echo "  make all       - Clean, synthesize, and verify the design"
 	@echo "  make clean     - Remove generated files and artifacts"
 	@echo "  make help      - Show this help message"
@@ -70,8 +78,40 @@ verify: fsm_netlist.v fsm_modified.v
 
 all : clean net editing verify
 
+# --- closed-source / CDL flow -----------------------------------------------
+# Uses the CDL backend instead of Liberty. Pair with $(CELL_META) so the
+# tool knows which cells are buffers vs flip-flops (CDL itself doesn't
+# encode that). `verify-cdl` runs a structural equivalence check via an
+# auto-generated stub .lib — sequential semantics are deferred to vendor
+# LEC (see docs/netlist_editing_workflow.md §5.5).
+
+editing-cdl:
+	uv run python -m netlist_tool fsm_netlist.v fsm_modified.v \
+	    --N $(N_BUFF) --cdl $(CDL) --cell-meta $(CELL_META)
+
+$(STUB_LIB): $(CDL) $(CELL_META)
+	uv run python -m netlist_tool.cdl_parser --emit-stub-lib $(CDL) \
+	    --cell-meta $(CELL_META) -o $@
+
+verify-cdl: fsm_netlist.v fsm_modified.v $(STUB_LIB)
+	yosys -p "\
+		read_liberty -lib $(STUB_LIB); \
+		read_liberty -ignore_miss_func -overwrite $(STUB_LIB); \
+		read_verilog fsm_netlist.v; \
+		rename flip_flop_adder gold; \
+		read_verilog fsm_modified.v; \
+		rename flip_flop_adder gate; \
+		equiv_make gold gate equiv; \
+		hierarchy -top equiv; \
+		clk2fflogic; \
+		async2sync; \
+		prep -flatten; \
+		equiv_induct -seq 10; \
+		equiv_status -assert"
+
 clean:
 	rm -f *.o *.cf *.vcd
 	rm -f tb_flip_flop_adder
 	rm -f fsm_netlist.v fsm_modified.v
+	rm -f $(STUB_LIB) $(CDL).json
 	@echo "Cleaned: object files, config files, waveforms, testbench, and synthesis results"

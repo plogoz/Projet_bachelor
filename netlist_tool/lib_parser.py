@@ -1,8 +1,5 @@
 """
 ----------
-Vibe-coded .lib cell parser for netlist -> graph
-26.04.2026 @ 15h12
-----------
 
 Liberty (.lib) file parser.
 
@@ -33,10 +30,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pyparsing as pp
+
+from .cell_info import CellInfo
 
 # ---------------------------------------------------------------------------
 # 1. Comment stripping  (pyparsing — handles multi-line /* */ correctly)
@@ -81,50 +79,7 @@ def _unquote(s: str) -> str:
 # ---------------------------------------------------------------------------
 # 3. Data structures
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class CellInfo:
-    """Pin direction info for a single standard cell."""
-
-    name: str
-    pins: dict[str, str] = field(default_factory=dict)  # pin_name → direction
-    pin_function: dict[str, str] = field(default_factory=dict)  # output_pin → fn expr
-    is_seq: bool = False  # set when an ff() or latch() group appears in the cell
-
-    def signal_pins(self) -> dict[str, str]:
-        """Signal pins only (excludes power/ground)."""
-        return {p: d for p, d in self.pins.items() if d not in ("power", "internal")}
-
-    def input_pins(self) -> list[str]:
-        return [p for p, d in self.pins.items() if d == "input"]
-
-    def output_pins(self) -> list[str]:
-        return [p for p, d in self.pins.items() if d == "output"]
-
-    def is_sequential(self) -> bool:
-        """True iff this cell holds state (FF or latch).
-
-        Detected by the presence of an `ff()` or `latch()` group in the
-        Liberty cell body — library-agnostic, no name heuristics.
-        """
-        return self.is_seq
-
-    def is_buffer(self) -> bool:
-        """True iff this cell is a 1-input/1-output combinational buffer.
-
-        Library-agnostic: relies on the Liberty `function` attribute of the
-        output pin equalling the input pin name (with optional surrounding
-        parens / whitespace), not on cell-name conventions.
-        """
-        ins = self.input_pins()
-        outs = self.output_pins()
-        if len(ins) != 1 or len(outs) != 1:
-            return False
-        func = self.pin_function.get(outs[0], "").strip()
-        while func.startswith("(") and func.endswith(")"):
-            func = func[1:-1].strip()
-        return func == ins[0]
+# CellInfo lives in cell_info.py — shared with cdl_parser.
 
 
 # ---------------------------------------------------------------------------
