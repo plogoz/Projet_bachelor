@@ -157,13 +157,28 @@ def build_graph(module: Module, lib: LibParser | None = None) -> nx.DiGraph:
                     G.add_edge(driver_node, inst.name, net=net_key)
 
     # Module output ports consume the net they are connected to.
+    inout_self_loops = 0
     for port_name, port_decl in module.ports.items():
         if port_decl.direction in ("output", "inout"):
             # The port net name equals the port name itself (Yosys convention).
             # Also check assign aliases.
             net_key = alias.get(port_name, port_name)
             driver_node = net_driver.get(net_key)
-            if driver_node is not None:
-                G.add_edge(driver_node, _port_node(port_name), net=net_key)
+            if driver_node is None:
+                continue
+            # An inout port that drives its own undriven net (typical for
+            # supply nets) would close a self-loop and break topological_sort.
+            # The module's port + connection data is unaffected — only this
+            # edge in the working graph is filtered.
+            if driver_node == _port_node(port_name):
+                inout_self_loops += 1
+                continue
+            G.add_edge(driver_node, _port_node(port_name), net=net_key)
+
+    if inout_self_loops:
+        print(
+            f"  Skipped {inout_self_loops} inout-port self-loop(s) "
+            "(likely supply nets driven only by the port itself)"
+        )
 
     return G
