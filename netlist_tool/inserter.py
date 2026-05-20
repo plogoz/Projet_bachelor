@@ -31,6 +31,8 @@ The input Module and graph are not mutated.
 from __future__ import annotations
 
 import copy
+import sys
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import networkx as nx
@@ -39,6 +41,80 @@ from .netlist_parser import Instance, Module, NetRef, WireDecl
 
 if TYPE_CHECKING:
     from .lib_parser import LibParser
+
+
+def _diagnose_cycle(graph: nx.DiGraph, cells: dict) -> None:
+    """Compact cycle report for when topological_sort fails.
+
+    Output is bounded (<~50 lines) regardless of graph size and biased
+    toward design-anonymous aggregates (SCC sizes, cell-type histogram,
+    pin directions) over instance-name dumps.
+    """
+    max_path_edges = 20
+
+    sccs = [c for c in nx.strongly_connected_components(graph) if len(c) > 1]
+    if sccs:
+        sizes = sorted(len(c) for c in sccs)
+        print(
+            f"  SCC summary: {len(sccs)} cycle group(s); "
+            f"smallest={sizes[0]}, largest={sizes[-1]}",
+            file=sys.stderr,
+        )
+
+    try:
+        cycle_edges = nx.find_cycle(graph)
+    except nx.NetworkXNoCycle:
+        print(
+            "  (no cycle found — graph may have mutated during iteration)",
+            file=sys.stderr,
+        )
+        return
+
+    type_counts: Counter[str] = Counter()
+    has_sequential = False
+    for u, _ in cycle_edges:
+        t = graph.nodes[u].get("cell_type") or "(port)"
+        type_counts[t] += 1
+        ci = cells.get(t)
+        if ci is not None and ci.is_seq:
+            has_sequential = True
+
+    seq_label = "yes" if has_sequential else "no"
+    print(
+        f"  Example cycle: {len(cycle_edges)} edges; "
+        f"contains sequential cell? {seq_label}",
+        file=sys.stderr,
+    )
+    print(f"  Cell-type histogram in cycle: {dict(type_counts)}", file=sys.stderr)
+
+    shown = min(max_path_edges, len(cycle_edges))
+    print(f"  Cycle path (first {shown} edge(s)):", file=sys.stderr)
+    for u, v in cycle_edges[:shown]:
+        u_type = graph.nodes[u].get("cell_type") or "(port)"
+        v_type = graph.nodes[v].get("cell_type") or "(port)"
+        net = graph.edges[u, v].get("net", "?")
+        print(f"    {u} ({u_type})  --{net}-->  {v} ({v_type})", file=sys.stderr)
+    if len(cycle_edges) > shown:
+        print(f"    ... +{len(cycle_edges) - shown} more edge(s)", file=sys.stderr)
+
+    print("  Pin directions for cell types in this cycle:", file=sys.stderr)
+    for ct in sorted(type_counts):
+        if ct == "(port)":
+            continue
+        ci = cells.get(ct)
+        if ci is None:
+            print(f"    {ct}: not in library", file=sys.stderr)
+            continue
+        flags = []
+        if ci.is_seq:
+            flags.append("seq")
+        if ci.is_buf:
+            flags.append("buf")
+        tag = f" [{','.join(flags)}]" if flags else ""
+        print(
+            f"    {ct}{tag}: in={ci.input_pins()}  out={ci.output_pins()}",
+            file=sys.stderr,
+        )
 
 
 def insert_buffers(
