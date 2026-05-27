@@ -49,9 +49,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bb-cell",
         default=None,
         metavar="CELL",
-        help="Cell type name for the inserted buffer. If omitted and "
-        "--lib is given, the first buffer cell found in the "
-        "library is used; otherwise falls back to BLACKBOX.",
+        help="Cell type name for the inserted buffer. If omitted, a "
+        "1-input/1-output buffer cell is auto-selected from --lib / "
+        "--cdl; the tool errors out if no buffer is tagged in the "
+        "library (see the sidecar's \"buffers\" list for the CDL flow).",
     )
     p.add_argument(
         "--in-port",
@@ -164,12 +165,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.bb_cell is None and lib is not None:
         pick = _auto_select_buffer(lib)
-        if pick is not None:
-            args.bb_cell, args.in_port, args.out_port = pick
+        if pick is None:
             print(
-                f"\nAuto-selected buffer from {_describe_lib_source(args, lib)}: "
-                f"{args.bb_cell} (in={args.in_port}, out={args.out_port})"
+                f"error: no buffer cell found in {_describe_lib_source(args, lib)}. "
+                f'Tag a 1-input/1-output cell in the sidecar\'s "buffers" list '
+                f"(CDL flow) or supply --bb-cell explicitly. Silently falling "
+                f"back to a placeholder cell type would produce a netlist that "
+                f"verify-cdl cannot resolve.",
+                file=sys.stderr,
             )
+            return 1
+        args.bb_cell, args.in_port, args.out_port = pick
+        print(
+            f"\nAuto-selected buffer from {_describe_lib_source(args, lib)}: "
+            f"{args.bb_cell} (in={args.in_port}, out={args.out_port})"
+        )
+    # The BLACKBOX fallback only kicks in when no library was supplied — and
+    # the lib-is-None check below rejects that case before we'd ever write a
+    # buffer. Kept as a defensive default for any future caller that bypasses
+    # the lib check.
     if args.bb_cell is None:
         args.bb_cell = "BLACKBOX"
     if args.in_port is None:

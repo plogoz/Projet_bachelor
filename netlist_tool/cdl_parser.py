@@ -13,13 +13,24 @@ placeholder used in stub files) is ignored.
 
 The CDL format gives us pin direction but **none** of the metadata the
 Liberty path derives from `function:` strings or `ff()`/`latch()`
-groups. To classify buffers and sequential cells we read a sidecar JSON
-file:
+groups. To classify buffers and sequential cells — and to characterise
+combinational cells well enough for Yosys's equivalence prover — we
+read a sidecar JSON file:
 
     {
       "buffers":    ["BUFF_TEST", "CLKBUF_X1"],
-      "sequential": ["DFF_TEST",  "DLAT_TEST"]
+      "sequential": ["DFF_TEST",  "DLAT_TEST"],
+      "functions": {
+        "AND_TEST": { "Y": "(A & B)" },
+        "INV_TEST": { "Y": "(!A)"    }
+      }
     }
+
+The `functions` map populates `CellInfo.pin_function` for combinational
+cells, which `emit_stub_lib` then emits as `function : "..."` lines so
+that `equiv_induct` can reason through them. Sequential cells stay
+opaque blackboxes (no `ff()` block); the two-pass `read_liberty` in the
+Makefile keeps them around as bare-blackbox modules.
 
 Multi-input: the parser accepts a single CDL path, a list of CDL paths,
 or a directory of CDLs (top-level *.cdl only). All cells are merged
@@ -126,7 +137,7 @@ def _apply_meta(
     meta: dict,
     meta_source: str,
 ) -> None:
-    """Set is_buf / is_seq flags from a sidecar dict. Warn on unknown names."""
+    """Set is_buf / is_seq / pin_function from a sidecar dict. Warn on unknown names."""
     for key, attr in (("buffers", "is_buf"), ("sequential", "is_seq")):
         names = meta.get(key, []) or []
         if not isinstance(names, list):
@@ -143,6 +154,36 @@ def _apply_meta(
                 )
                 continue
             setattr(cell, attr, True)
+
+    functions = meta.get("functions", {}) or {}
+    if not isinstance(functions, dict):
+        raise ValueError(
+            f"{meta_source}: 'functions' must be an object, "
+            f"got {type(functions).__name__}"
+        )
+    for cell_name, pin_map in functions.items():
+        cell = cells.get(cell_name)
+        if cell is None:
+            print(
+                f"warning: {meta_source}: '{cell_name}' listed under 'functions' "
+                f"but not present in the CDL",
+                file=sys.stderr,
+            )
+            continue
+        if not isinstance(pin_map, dict):
+            raise ValueError(
+                f"{meta_source}: functions['{cell_name}'] must be an object, "
+                f"got {type(pin_map).__name__}"
+            )
+        for pin_name, expr in pin_map.items():
+            if pin_name not in cell.pins:
+                print(
+                    f"warning: {meta_source}: functions['{cell_name}']['{pin_name}'] "
+                    f"references a pin not declared in the CDL",
+                    file=sys.stderr,
+                )
+                continue
+            cell.pin_function[pin_name] = expr
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +253,7 @@ class CdlParser:
     more sidecar JSONs. See module docstring for the precedence rules.
     """
 
-    _CACHE_VERSION = 2
+    _CACHE_VERSION = 3
     _CACHE_DIR = Path(".cdlcache")
 
     def __init__(
@@ -353,6 +394,7 @@ class CdlParser:
             "cells": {
                 name: {
                     "pins": cell.pins,
+                    "pin_function": cell.pin_function,
                     "is_seq": cell.is_seq,
                     "is_buf": cell.is_buf,
                 }
@@ -370,6 +412,7 @@ class CdlParser:
             name: CellInfo(
                 name=name,
                 pins=entry.get("pins", {}),
+                pin_function=entry.get("pin_function", {}),
                 is_seq=entry.get("is_seq", False),
                 is_buf=entry.get("is_buf", False),
             )
