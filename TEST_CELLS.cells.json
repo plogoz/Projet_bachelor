@@ -1,0 +1,9 @@
+{
+  "buffers":    ["BUFF_TEST"],
+  "sequential": ["DFF_TEST"],
+  "functions": {
+    "AND_TEST": { "Y": "(A & B)" },
+    "OR_TEST":  { "Y": "(A | B)" },
+    "INV_TEST": { "Y": "(!A)" }
+  }
+}

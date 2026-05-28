@@ -19,3 +19,7 @@
 !skywater-pdk-libs-sky130_fd_sc_hd/
 !skywater-pdk-libs-sky130_fd_sc_hd/timing/
 !skywater-pdk-libs-sky130_fd_sc_hd/timing/sky130_fd_sc_hd__tt_025C_1v80.lib
+
+# Allow .cdl and JSON stubs
+!*.cdl
+!*.cells.json

@@ -1,0 +1,50 @@
+**********************************************************************
+* Library Name : TEST_LIB
+* Cell Name : AND_TEST
+* View Name : schematic
+**********************************************************************
+
+.SUBCKT AND_TEST A B Y BIAS_N BIAS_P VDD VSS
+*.PININFO A:I B:I Y:O BIAS_N:B BIAS_P:B VDD:B VSS:B
+………
+.ENDS
+**********************************************************************
+* Library Name : TEST_LIB
+* Cell Name : OR_TEST
+* View Name : schematic
+**********************************************************************
+
+.SUBCKT OR_TEST A B Y BIAS_N BIAS_P VDD VSS
+*.PININFO A:I B:I Y:O BIAS_N:B BIAS_P:B VDD:B VSS:B
+…
+.ENDS
+**********************************************************************
+* Library Name : TEST_LIB
+* Cell Name : BUFF_TEST
+* View Name : schematic
+**********************************************************************
+
+.SUBCKT BUFF_TEST A Y BIAS_N BIAS_P VDD VSS
+*.PININFO A:I Y:O BIAS_N:B BIAS_P:B VDD:B VSS:B
+…
+.ENDS
+**********************************************************************
+* Library Name : TEST_LIB
+* Cell Name : INV_TEST
+* View Name : schematic
+**********************************************************************
+
+.SUBCKT INV_TEST A Y BIAS_N BIAS_P VDD VSS
+*.PININFO A:I Y:O BIAS_N:B BIAS_P:B VDD:B VSS:B
+…
+.ENDS
+**********************************************************************
+* Library Name : TEST_LIB
+* Cell Name : DFF_TEST
+* View Name : schematic
+**********************************************************************
+
+.SUBCKT DFF_TEST D Q CLK VDD VSS
+*.PININFO D:I Q:O CLK:I VDD:B VSS:B BIAS_N:B BIAS_P:B
+…
+.ENDS
