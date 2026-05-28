@@ -15,7 +15,7 @@
 #              single VHDL=... override drives the whole flow. Override
 #              NETLIST directly to enter at the editing stage with your own
 #              Verilog netlist (no VHDL needed).
-#   MODIFIED   Edited netlist produced by `editing`. Defaults to
+#   MODIFIED   Edited netlist produced by `editing`. Defaulbts to
 #              <netlist-stem>_modified.v (a `_netlist` suffix on the netlist
 #              filename is stripped first).
 #
