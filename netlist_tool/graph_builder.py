@@ -141,7 +141,25 @@ def build_graph(module: Module, lib: LibParser | None = None) -> nx.DiGraph:
         if port_decl.direction in ("input", "inout"):
             net_driver[port_name] = _port_node(port_name)
 
+    # Sequential cells (flip-flops / latches) terminate a combinational cone:
+    # their output samples the *previous* clock cycle, so it must not carry a
+    # combinational edge forward. Registering no driver for a flop output makes
+    # its Q a graph source, which opens every register-feedback loop and leaves
+    # the combinational graph acyclic — required by depth-based insertion.
+    #
+    # Yosys-synthesized netlists masked the need for this: they route flop
+    # fan-out through bus-slice `assign` aliases that _build_alias_map drops,
+    # so the feedback edges never formed. Netlists from other tools wire nets
+    # directly (no aliases), so the cut must be explicit here. Needs the library
+    # to tag flops sequential (ff()/latch() in Liberty, or the CDL sidecar
+    # "sequential" list). See docs/netlist_editing_workflow.md §8.6.
+    seq_types: set[str] = set()
+    if lib is not None:
+        seq_types = {name for name, ci in lib.parse().items() if ci.is_seq}
+
     for inst in module.instances:
+        if inst.cell_type in seq_types:
+            continue  # flop output is a source — cut here to break feedback
         for pin, ref in inst.connections.items():
             if _is_output_pin(pin, inst.cell_type, lib):
                 net_key = _resolve_net(ref, alias)

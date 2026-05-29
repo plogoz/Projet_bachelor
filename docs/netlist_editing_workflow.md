@@ -334,6 +334,61 @@ The stub generator was validated by round-trip against the real sky130 Liberty: 
 
 Full rationale, fixture quirks (`*.PININFO`/`.SUBCKT` mismatches, missing final `.ENDS`), and file map in [docs/cdl_backend.md](cdl_backend.md).
 
+### 8.6 Sequential feedback and the DAG assumption
+
+Depth-based insertion walks the netlist in topological order (`inserter.py`
+→ `nx.topological_sort`), so **the gate graph must be acyclic**. Real designs
+are not: any register feedback (FSM state, counters, load-enable hold) forms a
+`flop → logic → flop` loop. The tool is *supposed* to break these at
+sequential cells — a flip-flop's output samples the **previous** clock cycle,
+so it starts a fresh combinational cone and must not carry a combinational
+edge forward.
+
+**The open-source flow never actually exercised this.** On `fsm_netlist.v`,
+Yosys routes every flop's fan-out through a **bus-slice** `assign` alias:
+
+```verilog
+assign _214_ = bxdp[10];   // consumer reads _214_; flop drives bxdp[10]
+```
+
+`graph_builder._build_alias_map` only resolves **scalar→scalar** assigns
+(`graph_builder.py:64` — `if a.lhs.msb is None and a.rhs.msb is None`). A
+bus-bit RHS like `bxdp[10]` is skipped, so `_214_` never resolves to the
+flop's output net, the `flop → mux` feedback edge is never created, and the
+graph comes out acyclic **by accident** — real edges simply go missing.
+Verified empirically: in the sky130 graph, flop `_527_` (`Q = bxdp[10]`) has
+**zero out-edges**.
+
+**The closed-source netlist removes the accident.** It contains **no `assign`
+aliases at all** (the vendor tool wires nets directly), so the feedback edges
+survive and `topological_sort` hits genuine cycles — the SCCs reported by
+`inserter._diagnose_cycle` (e.g. "4 cycle group(s); smallest=3, largest=9").
+
+Two traps when diagnosing this:
+
+- **`contains sequential cell? no` is unreliable.** It is computed from
+  `CellInfo.is_seq` (`inserter.py:79`). A stub `.lib` / CDL that does not tag
+  its flops reports "no" even when the loop physically runs through a flop.
+  Trust the `Cell-type histogram in cycle:` line instead — the flop cell type
+  will be in it.
+- **`inout` pins are not the cause.** They are treated as consumers, never
+  drivers (`graph_builder.py:88-93`), so mislabeled directions *drop* edges
+  rather than add the back-edge a loop needs. Fix them for correctness, but
+  they do not create these cycles.
+
+**Fix — two parts, both required:**
+
+1. **Tag the flops as sequential.** Liberty derives this from `ff()`/`latch()`
+   groups; the hand-edited stub has none. In the closed-source flow the
+   authoritative place is the **CDL sidecar JSON `"sequential"` list**
+   (`<cdl>.cells.json`) — every flip-flop / latch cell name must be listed
+   there. Without this the tool cannot know where to cut.
+2. **Cut the graph at sequential cells** in `build_graph`: skip registering a
+   sequential cell's output as a net driver, so its `Q` becomes a graph source
+   and every register loop opens into a DAG. *(Not yet implemented — the tool
+   has been relying on the bus-alias accident above, which only held for
+   Yosys-style netlists.)*
+
 ---
 
 ## 9. Next Steps
